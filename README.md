@@ -17,9 +17,9 @@ It works by transforming binary data into a sequence of Spotify tracks. Essentia
 
 ## 🛠️ Prerequisites
 
-- **Go**: Version 1.25 or higher.
-- **Spotify Account**: Required for API access to modify playlists effectively.
-- **Spotify Developer Application**: You need a Client ID and Client Secret.
+- **Go:** Version 1.25 or higher.
+- **Spotify Account:** Required for API access to modify playlists effectively.
+- **Spotify Developer Application:** You need a Client ID and Client Secret.
 
 ## ⚙️ Setup
 
