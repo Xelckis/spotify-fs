@@ -1,5 +1,7 @@
 ![Spotify-fs](header.png)
 
+| 🇺🇸 English | [🇪🇸 Español](docs/README.es.md) | [🇧🇷 Português](docs/README.pt.md)
+
 **spotify-fs** is a Proof of Concept (PoC) tool written in Go that allows you to store arbitrary files inside Spotify playlists. 
 
 It works by transforming binary data into a sequence of Spotify tracks. Essentially, it maps byte values (0-255) to specific songs and arranges them in a playlist to represent the file.
@@ -15,9 +17,9 @@ It works by transforming binary data into a sequence of Spotify tracks. Essentia
 
 ## 🛠️ Prerequisites
 
-- **Go**: Version 1.25 or higher.
-- **Spotify Account**: Required for API access to modify playlists effectively.
-- **Spotify Developer Application**: You need a Client ID and Client Secret.
+- **Go:** Version 1.25 or higher.
+- **Spotify Account:** Required for API access to modify playlists effectively.
+- **Spotify Developer Application:** You need a Client ID and Client Secret.
 
 ## ⚙️ Setup
 
@@ -88,3 +90,7 @@ Select option 2.
   - Storage: The file is read in chunks. Each byte is converted to its corresponding Track URI and added to a playlist.
 
   - Linked List: If a file is too large for one playlist, a new one is created. The ID of the next playlist is stored in the description of the current playlist, forming a linked list.
+ 
+## License 
+
+This project is licensed under the [Apache-2.0 License](https://opensource.org/license/apache-2-0) - see the [LICENSE](LICENSE) file for details.
