@@ -2,7 +2,8 @@ import time
 import urllib.parse
 import json
 import requests
-
+import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 #ele ler o arquivo json com as informações de login
 with open("informacoes.json", "r", encoding="utf-8") as arquivo:
@@ -98,33 +99,73 @@ class spotifyclient:
             return None
 
 
+# Variável global para guardar o código temporariamente
+# que código é esse?
+codigo_capturado = None
+
+#essa classe é uma classe filha de uma outra classe criada na biblioteca http.server
+class gerenciaresposta(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        return # Silencia logs do servidor para não poluir o terminal
+
+    def do_GET(self):
+        global codigo_capturado
+        #o if vai rolar o endereço que o naveador acessou
+        # se dentro do endereço tiver esse endereço ai do spotify, ele entra
+        if "/callback/spotify" in self.path:
+            #ele divide a url para achar aonde ta escrito code
+
+            #ele começa cortando e pegando apenas o que ta depois da interrogação
+            query = urllib.parse.urlparse(self.path).query
+            #aqui ele corta mais uma vez usando o & como caractere de referencia e cria dois pedaços
+            #depois ele pega esses dois valores e usa = como caractere de referencia, deixando o que ta do lado esquerdo chave e lado direito valor
+            query_components = urllib.parse.parse_qs(query)
+
+            #quando acha o code, ele passa uma mensagem siples em HTML no naveador confirmando que pode fehcar
+            if "code" in query_components:
+                #querycomponents é um dicionario que é criado depois do
+                #o query retorna uma lista, no lado direito, lado valor. Sendo assim é dito para ele pegar o primeiro item e único da lista
+                codigo_capturado = query_components["code"][0]
+                self.send_response(200)
+                self.send_header("Content-type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"<h1>Sucesso! Pode fechar. Volte ao Python.</h1>")
+                self.wfile.write(b"<script>window.close();</script>")
+            else:
+                self.send_error(400, "Codigo nao encontrado")
+
+#TODO só copiei e colei preciso estudar melhor esse código ---> atualização: entendi ja como funciona e está comentado
+
+def login_automatico(client_id, client_secret, redirect_uri, escopos):
+    # 1. Gera o link usando a função que foi criada antes
+    link = gera_link(client_id, redirect_uri, escopos)
+
+    # 2. Abre o navegador automaticamente
+    print("Abrindo navegador para login...")
+    webbrowser.open(link)
+
+    # 3. Inicia o servidor local para esperar a resposta
+    # Isso trava o programa aqui até o Spotify responder na porta 8080
+    server_address = ('127.0.0.1', 8080)
+    httpd = HTTPServer(server_address, gerenciaresposta)
+
+    print("Aguardando resposta do Spotify (callback)...")
+    # O handle_request atende UMA única vez e depois solta o código
+    httpd.handle_request()
+
+    if codigo_capturado:
+        print(f"Código capturado!")
+        return troca_codigo_p_token(codigo_capturado, client_id, client_secret, redirect_uri)
+    else:
+        print("Falha ao capturar o código.")
+        return None
 
 if __name__ == "__main__":
-    # 1. Gera o link
-    link = gera_link(dados["id_client"], dados["url_redirecionamento"], permi_spotify)
+    # Garanta que no JSON as chaves sejam exatamente "id_client" e "id_client_secret"
+    token = login_automatico(dados["id_client"], dados["id_client_secret"], dados["url_redirecionamento"], permi_spotify)
 
-    print("-" * 50)
-    print("1. Clique no link abaixo e faça login:")
-    print(link)
-    print("-" * 50)
-
-    # 2. Pede para o usuário colar o código
-    print("2. Você será redirecionado para uma página com erro (localhost).")
-    print("3. Olhe a URL lá em cima e copie o código que vem depois de 'code='")
-    code_recebido = input("Cole o código aqui: ").strip()  # .strip() remove espaços extras
-
-    # Se o usuário colou a URL inteira sem querer, a gente tenta limpar
-    if "code=" in code_recebido:
-        code_recebido = code_recebido.split("code=")[1].split("&")[0]
-
-    # 3. Troca pelo token
-    if code_recebido:
-        token = troca_codigo_p_token(code_recebido, dados["id_client"], dados["id_client_secret"], dados["url_redirecionamento"])
-
-        if token:
-            # 4. Testa a conexão
-            cliente = spotifyclient(token)
-            user_id = cliente.get_user_id()
-            print(f"\nAutenticado com sucesso! ID do Usuário: {user_id}")
-    else:
-        print("Nenhum código foi inserido.")
+    if token:
+        # Agora o nome da classe bate com a definição lá em cima
+        cliente = spotifyclient(token)
+        user_id = cliente.get_user_id()
+        print(f"Autenticado: {user_id}")
