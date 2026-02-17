@@ -1,9 +1,4 @@
-import time
-import urllib.parse
-import json
-import requests
-import webbrowser
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from imports import *
 
 #ele ler o arquivo json com as informações de login
 with open("informacoes.json", "r", encoding="utf-8") as arquivo:
@@ -86,7 +81,6 @@ class spotifyclient:
             return response
 
     def get_user_id(self):
-        #não entendi como funciona essa função
         url = "https://api.spotify.com/v1/me"
 
         response = self._faz_requisicao("GET", url)
@@ -98,6 +92,24 @@ class spotifyclient:
             print(f"Erro ao pegar perfil: {response.status_code}")
             return None
 
+    def procura_musica(self, query):
+        url = "https://api.spotify.com/v1/search"
+        parametros = {
+            "q":query,
+            "type":"track",
+            "limit":50
+                      }
+        #nesse caso tenho que explicar o que é o argumento que estou passando, por conta da kwarg achar que é uma variavel obrigatoria
+        resposta = self._faz_requisicao("GET", url, params = parametros)
+
+        if resposta.status_code == 200:
+            #devolvendo a lista de musicas com possiveis repetições
+            dados = resposta.json()
+            return dados["tracks"]["items"]
+
+        else:
+            print(f"Erro na busca: {resposta.status_code}")
+            return []
 
 # Variável global para guardar o código temporariamente
 # que código é esse?
