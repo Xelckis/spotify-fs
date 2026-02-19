@@ -17,7 +17,7 @@ import (
 	mathRand "math/rand/v2"
 	"net/http"
 	"os"
-	spotify "spotifyfs/pkg/spotify"
+	spotify "unlimitedfs/pkg/spotify"
 	"strings"
 
 	"golang.org/x/crypto/pbkdf2"

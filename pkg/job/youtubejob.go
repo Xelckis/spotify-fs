@@ -11,63 +11,41 @@ import (
 	"net/http"
 	"os"
 	"unlimitedfs/pkg/crypto"
-	"unlimitedfs/pkg/spotify"
+	"unlimitedfs/pkg/youtube"
 	"strconv"
 	"sync"
 	"time"
 )
 
 const (
-	numWorkers          = 3
-	maxBytesPerPlaylist = 10000
+	maxVideosPerPlaylist = 5000
 )
 
-type WriteJob struct {
-	PlaylistID string
-	Chunks     [][]byte
-}
-
-type ReadJob struct {
-	Sequence   int
-	PlaylistID string
-}
-
-type ReadResult struct {
-	Sequence int
-	Data     []byte
-	NextID   string
-}
-
-func WriterWorker(ctx context.Context, s *spotify.SpotifyClient, job <-chan WriteJob, writerdictionary map[byte]string, wg *sync.WaitGroup) {
+func YouTubeWriterWorker(ctx context.Context, s *youtube.YouTubeClient, job <-chan WriteJob, writerdictionary map[byte]string, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for j := range job {
 		for i, chunk := range j.Chunks {
-			musicsURI := make([]string, len(chunk))
-			for idx, b := range chunk {
-				musicsURI[idx] = writerdictionary[b]
-			}
+			for _, b := range chunk {
+				videoID := writerdictionary[b]
 
-			addPlaylistURIS := spotify.SpotifyAddPlaylist{
-				MusicURIS: musicsURI,
-			}
+				for {
+					err := s.AddToPlaylist(ctx, videoID, j.PlaylistID)
+					if err == nil {
+						break
+					}
 
-			for {
-				err := s.AddToPlaylist(ctx, addPlaylistURIS, j.PlaylistID)
-				if err == nil {
-					break
+					log.Printf("[Worker] Error adding video to playlist %s (chunk %d): %v", j.PlaylistID, i, err)
+					time.Sleep(1 * time.Second)
 				}
-
-				log.Printf("[Worker] Critical error adding chunk %d to playlist %s: %v", i, j.PlaylistID, err)
-				time.Sleep(1 * time.Second)
 			}
 		}
 		fmt.Printf("Successfully finished all chunks for playlist %s\n", j.PlaylistID)
 	}
 }
 
-func Writer(s *spotify.SpotifyClient, filepath string, password string, playlistName string) {
+func YouTubeWriter(s *youtube.YouTubeClient, filepath string, password string, playlistName string) {
 	ctx := context.Background()
-	writerdictionary, readerdictionary, err := crypto.NewDictionary(ctx, password, s)
+	writerdictionary, readerdictionary, err := crypto.NewYouTubeDictionary(ctx, password, s)
 	if err != nil {
 		fmt.Printf("Error initializing dictionary: %v\n", err)
 		return
@@ -92,20 +70,14 @@ func Writer(s *spotify.SpotifyClient, filepath string, password string, playlist
 	wg.Add(numWorkers)
 
 	for w := 0; w < numWorkers; w++ {
-		go WriterWorker(ctx, s, jobs, writerdictionary, &wg)
+		go YouTubeWriterWorker(ctx, s, jobs, writerdictionary, &wg)
 	}
 
 	playlistCount := 0
 	lastPlaylistID := ""
 	var currentChunks [][]byte
-	bytesInCurrentPlaylist := 0
-	readBuf := make([]byte, spotify.SpotifyMaxTracksPerRequest)
-
-	isPublic := true
-	pInfo := spotify.PlaylistInfo{
-		Name:   playlistName,
-		Public: &isPublic,
-	}
+	videosInCurrentPlaylist := 0
+	readBuf := make([]byte, youtube.YouTubeChunkSize)
 
 	for {
 		n, err := file.Read(readBuf)
@@ -113,11 +85,11 @@ func Writer(s *spotify.SpotifyClient, filepath string, password string, playlist
 			chunk := make([]byte, n)
 			copy(chunk, readBuf[:n])
 			currentChunks = append(currentChunks, chunk)
-			bytesInCurrentPlaylist += n
+			videosInCurrentPlaylist += n
 		}
 
-		if (bytesInCurrentPlaylist >= maxBytesPerPlaylist || err == io.EOF) && len(currentChunks) > 0 {
-			newPlaylistID, createErr := s.CreatePlaylist(ctx, pInfo, lastPlaylistID, playlistCount)
+		if (videosInCurrentPlaylist >= maxVideosPerPlaylist || err == io.EOF) && len(currentChunks) > 0 {
+			newPlaylistID, createErr := s.CreatePlaylist(ctx, playlistName, lastPlaylistID, playlistCount)
 			if createErr != nil {
 				log.Printf("Failed to create playlist %d: %v", playlistCount, createErr)
 				break
@@ -130,7 +102,7 @@ func Writer(s *spotify.SpotifyClient, filepath string, password string, playlist
 
 			lastPlaylistID = newPlaylistID
 			currentChunks = nil
-			bytesInCurrentPlaylist = 0
+			videosInCurrentPlaylist = 0
 			playlistCount++
 		}
 
@@ -140,27 +112,37 @@ func Writer(s *spotify.SpotifyClient, filepath string, password string, playlist
 	}
 
 	close(jobs)
-	fmt.Println("All playlist links created. Finishing track uploads...")
+	fmt.Println("All playlist links created. Finishing video uploads...")
 	wg.Wait()
-	fmt.Println("All songs were added to the linked playlists successfully.")
+
+	if lastPlaylistID != "" {
+		err := s.EditPlaylistDescription(ctx, "null", lastPlaylistID)
+		if err != nil {
+			log.Printf("Warning: could not set last playlist description to null: %v", err)
+		}
+	}
+
+	fmt.Println("All videos were added to the linked playlists successfully.")
 }
 
-func ReaderWorker(ctx context.Context, s *spotify.SpotifyClient, jobs <-chan ReadJob, results chan<- ReadResult, readerdictionary map[string]byte) {
+func YouTubeReaderWorker(ctx context.Context, s *youtube.YouTubeClient, jobs <-chan ReadJob, results chan<- ReadResult, readerdictionary map[string]byte) {
 	for j := range jobs {
-		playlistURL := fmt.Sprintf(s.WebConfig.PlaylistURL, j.PlaylistID)
 		var allBytes []byte
 		var nextPlaylistID string
 
-		rateLimitMultiplier := 1
+		pageToken := ""
 
 		for {
-			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, playlistURL, nil)
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, s.WebConfig.PlaylistItemsURL, nil)
 			req.Header.Set("Authorization", "Bearer "+s.Auth.Token.AccessToken)
 
 			query := req.URL.Query()
-			query.Add("fields", "next,items(track(uri))")
-			query.Add("limit", "50")
-			query.Add("market", "US")
+			query.Add("part", "snippet")
+			query.Add("playlistId", j.PlaylistID)
+			query.Add("maxResults", "50")
+			if pageToken != "" {
+				query.Add("pageToken", pageToken)
+			}
 			req.URL.RawQuery = query.Encode()
 
 			resp, err := s.WebConfig.Client.Do(req)
@@ -170,9 +152,9 @@ func ReaderWorker(ctx context.Context, s *spotify.SpotifyClient, jobs <-chan Rea
 			}
 
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				if resp.StatusCode == 429 {
+				if resp.StatusCode == 429 || resp.StatusCode == 403 {
 					retryAfterStr := resp.Header.Get("Retry-After")
-					waitTime := spotify.RateLimitWaitTime
+					waitTime := youtube.RateLimitWaitTime
 
 					if retryAfterStr != "" {
 						if seconds, err := strconv.Atoi(retryAfterStr); err == nil {
@@ -181,18 +163,15 @@ func ReaderWorker(ctx context.Context, s *spotify.SpotifyClient, jobs <-chan Rea
 					}
 
 					jitter := mathRand.IntN(1000)
-					log.Printf("[Worker] Rate limit (429). Waiting %d seconds + %d ms of jitter...", waitTime, jitter)
-
+					log.Printf("[Worker] Rate limit (%d). Waiting %d seconds + %d ms of jitter...", resp.StatusCode, waitTime, jitter)
 					time.Sleep(time.Duration(waitTime)*time.Second + time.Duration(jitter)*time.Millisecond)
-
+					resp.Body.Close()
 					continue
-
 				}
 
-				if resp.StatusCode == 502 {
-					log.Printf("[Worker] Error 502 in playlist %s. Trying again in 1s...", j.PlaylistID)
+				if resp.StatusCode == 502 || resp.StatusCode == 503 {
+					log.Printf("[Worker] Error %d in playlist %s. Trying again in 1s...", resp.StatusCode, j.PlaylistID)
 					time.Sleep(1 * time.Second)
-					rateLimitMultiplier++
 					resp.Body.Close()
 					continue
 				}
@@ -202,24 +181,25 @@ func ReaderWorker(ctx context.Context, s *spotify.SpotifyClient, jobs <-chan Rea
 				break
 			}
 
-			var items spotify.PlaylistItems
+			var items youtube.PlaylistItemListResponse
 			json.NewDecoder(resp.Body).Decode(&items)
 			resp.Body.Close()
 
 			for _, item := range items.Items {
-				if b, ok := readerdictionary[item.Track.Uri]; ok {
+				videoID := item.Snippet.ResourceID.VideoID
+				if b, ok := readerdictionary[videoID]; ok {
 					allBytes = append(allBytes, b)
 				} else {
 					log.Fatal("Stopping execution to avoid saving a corrupted file.")
 				}
 			}
 
-			if items.Next == "" {
+			if items.NextPageToken == "" {
 				nextID, _ := s.GetNextPlaylist(ctx, j.PlaylistID)
 				nextPlaylistID = nextID
 				break
 			}
-			playlistURL = items.Next
+			pageToken = items.NextPageToken
 		}
 
 		results <- ReadResult{
@@ -230,13 +210,13 @@ func ReaderWorker(ctx context.Context, s *spotify.SpotifyClient, jobs <-chan Rea
 	}
 }
 
-func Reader(startPlaylistID, filename, password, decoder string, s *spotify.SpotifyClient) {
+func YouTubeReader(startPlaylistID, filename, password, decoder string, s *youtube.YouTubeClient) {
 	ctx := context.Background()
 	var readerdictionary map[string]byte
 	var err error
 
 	if decoder == "" {
-		_, readerdictionary, err = crypto.NewDictionary(ctx, password, s)
+		_, readerdictionary, err = crypto.NewYouTubeDictionary(ctx, password, s)
 	} else {
 		readerdictionary, err = crypto.LoadMap(decoder, password)
 	}
@@ -248,7 +228,7 @@ func Reader(startPlaylistID, filename, password, decoder string, s *spotify.Spot
 	results := make(chan ReadResult, numWorkers)
 
 	for w := 0; w < numWorkers; w++ {
-		go ReaderWorker(ctx, s, jobs, results, readerdictionary)
+		go YouTubeReaderWorker(ctx, s, jobs, results, readerdictionary)
 	}
 
 	f, _ := os.OpenFile(filename, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
@@ -267,7 +247,7 @@ func Reader(startPlaylistID, filename, password, decoder string, s *spotify.Spot
 
 			currentPlaylistID, err = s.GetNextPlaylist(ctx, currentPlaylistID)
 			jobsSent++
-			if currentPlaylistID == "" && errors.Is(err, spotify.ErrNoMorePlaylist) {
+			if currentPlaylistID == "" && errors.Is(err, youtube.ErrNoMorePlaylist) {
 				doneSending = true
 			} else if err != nil {
 				fmt.Printf("Error while getting next playlist: %v\n", err)
